@@ -33,6 +33,7 @@ typedef struct {
     uint64_t requests;
     uint64_t bytes;
     uint64_t start;
+    uint64_t tx_requests;
     lua_State *L;
     errors errors;
     struct connection *cs;
@@ -58,6 +59,8 @@ typedef struct connection {
     size_t length;
     size_t written;
     uint64_t pending;
+    uint64_t tx_requests;
+    uint64_t n_sent;
     buffer headers;
     buffer body;
     char buf[RECVBUF];

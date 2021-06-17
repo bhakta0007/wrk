@@ -4,12 +4,19 @@
 #include "script.h"
 #include "main.h"
 
+uint64_t g_target_send = 0;
+uint64_t g_total_sent = 0;
+uint64_t g_total_received = 0;
+bool g_test_run = true;
+
 static struct config {
     uint64_t connections;
     uint64_t duration;
     uint64_t threads;
     uint64_t timeout;
     uint64_t pipeline;
+    uint64_t tx_requests;
+    bool     quit_when_done;
     bool     delay;
     bool     dynamic;
     bool     latency;
@@ -53,6 +60,8 @@ static void usage() {
            "        --latency          Print latency statistics   \n"
            "        --timeout     <T>  Socket/request timeout     \n"
            "    -v, --version          Print version details      \n"
+           "    -r, --requests         Number of requests to send per session \n"
+           "    -q, --quit-when-done   Quit when done sending requests (valid with -r) \n"
            "                                                      \n"
            "  Numeric arguments may include a SI unit (1k, 1M, 1G)\n"
            "  Time arguments may include a time unit (2s, 2m, 2h)\n");
@@ -61,6 +70,7 @@ static void usage() {
 int main(int argc, char **argv) {
     char *url, **headers = zmalloc(argc * sizeof(char *));
     struct http_parser_url parts = {};
+    uint64_t nConnections, deltaConnections;
 
     if (parse_args(&cfg, &url, &parts, headers, argc, argv)) {
         usage();
@@ -101,10 +111,16 @@ int main(int argc, char **argv) {
 
     cfg.host = host;
 
+    nConnections = cfg.connections / cfg.threads;
+    deltaConnections = cfg.connections - (nConnections * cfg.threads);
     for (uint64_t i = 0; i < cfg.threads; i++) {
         thread *t      = &threads[i];
         t->loop        = aeCreateEventLoop(10 + cfg.connections * 3);
         t->connections = cfg.connections / cfg.threads;
+        if (i == cfg.threads - 1) {
+            t->connections += deltaConnections;
+        }
+        t->tx_requests = cfg.tx_requests;
 
         t->L = script_create(cfg.script, url, headers);
         script_init(L, t, argc - optind, &argv[optind]);
@@ -143,7 +159,23 @@ int main(int argc, char **argv) {
     uint64_t bytes    = 0;
     errors errors     = { 0 };
 
-    sleep(cfg.duration);
+    g_target_send = cfg.connections * cfg.tx_requests;
+    if (cfg.quit_when_done && cfg.tx_requests) {
+        // Sleep for a second and then check if test is over
+        int nslept = 0;
+        while (g_test_run) {
+            sleep(1);
+            nslept++;
+            if (nslept > cfg.duration) {
+                printf("%s: Test did not terminate even after %lu seconds, stop\
+                       the test\n", __FUNCTION__, cfg.duration);
+                break;
+            }
+        }
+    } else {
+        sleep(cfg.duration);
+    }
+
     stop = 1;
 
     for (uint64_t i = 0; i < cfg.threads; i++) {
@@ -213,6 +245,7 @@ void *thread_main(void *arg) {
     connection *c = thread->cs;
 
     for (uint64_t i = 0; i < thread->connections; i++, c++) {
+        c->tx_requests = thread->tx_requests;
         c->thread = thread;
         c->ssl     = cfg.ctx ? SSL_new(cfg.ctx) : NULL;
         c->request = request;
@@ -326,6 +359,7 @@ static int response_complete(http_parser *parser) {
     thread *thread = c->thread;
     uint64_t now = time_us();
     int status = parser->status_code;
+    bool send_another_request = true;
 
     thread->complete++;
     thread->requests++;
@@ -345,7 +379,23 @@ static int response_complete(http_parser *parser) {
             thread->errors.timeout++;
         }
         c->delayed = cfg.delay;
-        aeCreateFileEvent(thread->loop, c->fd, AE_WRITABLE, socket_writeable, c);
+        send_another_request = true;
+        if (thread->tx_requests) {
+            send_another_request = c->n_sent < c->tx_requests;
+        }
+        if (send_another_request) {
+            aeCreateFileEvent(thread->loop, c->fd, AE_WRITABLE, socket_writeable, c);
+        }
+
+        __sync_fetch_and_add(&g_total_sent, 1);
+        if (g_total_sent >= g_target_send) {
+            g_test_run = false;
+        }
+    }
+    if (c->n_sent >= c->tx_requests) {
+        //close(c->fd);
+        //conn_completed[c->id] = 0;
+        goto done;
     }
 
     if (!http_should_keep_alive(parser)) {
@@ -393,6 +443,7 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
     }
 
     if (!c->written) {
+        c->n_sent++;
         if (cfg.dynamic) {
             script_request(thread->L, &c->request, &c->length);
         }
@@ -469,7 +520,9 @@ static char *copy_url_part(char *url, struct http_parser_url *parts, enum http_p
 static struct option longopts[] = {
     { "connections", required_argument, NULL, 'c' },
     { "duration",    required_argument, NULL, 'd' },
+    { "quit-when-done", no_argument,    NULL, 'q' },
     { "threads",     required_argument, NULL, 't' },
+    { "requests",    required_argument, NULL, 'r' },
     { "script",      required_argument, NULL, 's' },
     { "header",      required_argument, NULL, 'H' },
     { "latency",     no_argument,       NULL, 'L' },
@@ -488,9 +541,17 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
     cfg->connections = 10;
     cfg->duration    = 10;
     cfg->timeout     = SOCKET_TIMEOUT_MS;
+    cfg->quit_when_done = false;
+    cfg->tx_requests = 0;
 
-    while ((c = getopt_long(argc, argv, "t:c:d:s:H:T:Lrv?", longopts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "t:c:d:r:s:H:T:Lrqv?", longopts, NULL)) != -1) {
         switch (c) {
+            case 'q':
+                cfg->quit_when_done= true;
+                break;
+            case 'r':
+                if (scan_metric(optarg, &cfg->tx_requests)) return -1;
+                break;
             case 't':
                 if (scan_metric(optarg, &cfg->threads)) return -1;
                 break;

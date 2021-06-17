@@ -26,6 +26,75 @@
     Requests/sec: 748868.53
     Transfer/sec:    606.33MB
 
+## Options on top of standard wrk
+  1. Number of connections need not be a multiple of number of threads.
+  2. Ability to send <n> reuqests per connection (see next section for usage)
+
+     3 connections, 1 request per connection, quit when done:
+
+        bhakta@bhakta-ubuntu:~/dev/github/wrk$ time ./wrk -t2 -c3 http://192.168.1.12:9090/bhakta -r1 -q
+        Running 10s test @ http://192.168.1.12:9090/bhakta
+          2 threads and 3 connections
+          Thread Stats   Avg      Stdev     Max   +/- Stdev
+            Latency   830.33us  221.91us   1.07ms   66.67%
+            Req/Sec    14.50      6.36    19.00    100.00%
+          3 requests in 1.00s, 807.00B read
+        Requests/sec:      2.99
+        Transfer/sec:     804.79B
+
+        real    0m1.019s
+        user    0m0.005s
+        sys     0m0.004s
+
+
+     3 connections, 1 request per connection (quit per duration)
+
+        bhakta@bhakta-ubuntu:~/dev/github/wrk$ time ./wrk -t2 -c3 http://192.168.1.12:9090/bhakta -r1 -d10s
+        Running 10s test @ http://192.168.1.12:9090/bhakta
+          2 threads and 3 connections
+          Thread Stats   Avg      Stdev     Max   +/- Stdev
+            Latency     0.87ms   73.37us   0.95ms   66.67%
+            Req/Sec    15.00      7.07    20.00    100.00%
+          3 requests in 10.01s, 807.00B read
+        Requests/sec:      0.30
+        Transfer/sec:      80.59B
+
+        real    0m10.018s
+        user    0m0.003s
+        sys     0m0.007s
+
+     4 connections, 10 request per connection, quit when done
+
+        bhakta@bhakta-ubuntu:~/dev/github/wrk$ time ./wrk  http://192.168.1.12:9090/bhakta -t2 -c4 -r10 -q
+        Running 10s test @ http://192.168.1.12:9090/bhakta
+          2 threads and 4 connections
+          Thread Stats   Avg      Stdev     Max   +/- Stdev
+            Latency     2.16ms    1.38ms   5.96ms   85.00%
+            Req/Sec   200.00      2.83   202.00    100.00%
+          40 requests in 1.00s, 10.51KB read
+        Requests/sec:     39.94
+        Transfer/sec:     10.49KB
+
+        real    0m1.010s
+        user    0m0.003s
+        sys     0m0.011s
+
+     7 connections, 10 request per connection, quit when done
+
+        bhakta@bhakta-ubuntu:~/dev/github/wrk$ time ./wrk  http://192.168.1.12:9090/bhakta -t2 -c7 -r10 -q
+        Running 10s test @ http://192.168.1.12:9090/bhakta
+          2 threads and 7 connections
+          Thread Stats   Avg      Stdev     Max   +/- Stdev
+            Latency     3.07ms    1.35ms   6.97ms   78.57%
+            Req/Sec   350.00     70.71   400.00    100.00%
+          70 requests in 1.00s, 18.39KB read
+        Requests/sec:     69.89
+        Transfer/sec:     18.36KB
+
+        real    0m1.017s
+        user    0m0.005s
+        sys     0m0.007s
+
 ## Command Line Options
 
     -c, --connections: total number of HTTP connections to keep open with
@@ -43,6 +112,10 @@
 
         --timeout:     record a timeout if a response is not received within
                        this amount of time.
+
+## Options added on top of standard wrk (wg/wrk)
+    -r --requests       Number of requests to be sent per connection
+    -q --quit-when-done Quit after sending <r> requests. Valid only when <r> is set
 
 ## Benchmarking Tips
 
